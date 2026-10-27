@@ -103,6 +103,7 @@ function App() {
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [selectedRoute, setSelectedRoute] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [displayMode, setDisplayMode] = useState<"static" | "observed" | "both">("static");
   const [source, setSource] = useState<SourcePayload | null>(null);
   const [routeSearch, setRouteSearch] = useState("");
   const [playing, setPlaying] = useState(false);
@@ -126,7 +127,7 @@ function App() {
     if (!selectedRoute) return;
     setPlaying(false);
     setStepIndex(0);
-    fetch(`/api/scenario?route=${encodeURIComponent(selectedRoute)}`)
+    fetch(`/api/scenario?route=${encodeURIComponent(selectedRoute)}&mode=${displayMode}`)
       .then(assertResponse)
       .then((response) => response.json() as Promise<Scenario>)
       .then((nextScenario) => {
@@ -134,7 +135,7 @@ function App() {
         setSelectedNodeId(nextScenario.steps[0]?.node_id ?? nextScenario.route.handler_node_id);
       })
       .catch((reason: unknown) => setError(errorMessage(reason)));
-  }, [selectedRoute]);
+  }, [selectedRoute, displayMode]);
 
   const currentStep = scenario?.steps[stepIndex];
   const scenarioNodeIds = useMemo(() => new Set(scenario?.steps.map((step) => step.node_id) ?? []), [scenario]);
@@ -183,22 +184,33 @@ function App() {
       };
     });
     const activeEdgeId = currentStep?.edge_id;
-    const edges = visibleGraph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target) && visibleKinds[edge.kind]).map((edge) => ({
+    const edges = visibleGraph.edges.filter((edge) => {
+      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return false;
+      const observed = Boolean(edge.meta.observed) || edge.kind === "observed";
+      if (displayMode === "static" && edge.kind === "observed") return false;
+      if (displayMode === "observed" && !observed && !["reads", "writes", "http_call"].includes(edge.type)) return false;
+      const confidence = displayMode === "observed" && observed ? "observed" : edge.kind;
+      return visibleKinds[confidence as EdgeKind];
+    }).map((edge) => {
+      const observed = Boolean(edge.meta.observed) || edge.kind === "observed";
+      const confidence = displayMode === "observed" && observed ? "observed" : edge.kind;
+      return ({
       id: edge.id,
       source: edge.source,
       target: edge.target,
       type: "codeflow" as const,
-      markerEnd: { type: MarkerType.ArrowClosed, color: edge.meta.ghost ? "#b88cff" : edge.kind === "inferred" ? "#e8b653" : "#7991ad" },
+      markerEnd: { type: MarkerType.ArrowClosed, color: edge.meta.ghost ? "#b88cff" : confidence === "observed" ? "#62d8c9" : confidence === "inferred" ? "#e8b653" : "#7991ad" },
       data: {
-        confidence: edge.kind,
+        confidence,
         flowType: edge.type,
         ghost: Boolean(edge.meta.ghost),
         active: edge.id === activeEdgeId,
         mechanism: typeof edge.meta.mechanism === "string" ? edge.meta.mechanism : undefined,
       },
-    }));
+    });
+    });
     return { nodes, edges };
-  }, [visibleGraph, scenario, currentStep, visibleKinds]);
+  }, [visibleGraph, scenario, currentStep, visibleKinds, displayMode]);
 
   useEffect(() => {
     if (!playing || !scenario) return;
@@ -228,6 +240,9 @@ function App() {
   const codeLines = source?.code?.split("\n") ?? [];
   const incoming = source?.incoming ?? [];
   const outgoing = source?.outgoing ?? [];
+  const currentObservation = currentStep?.observation ?? (displayMode === "both"
+    ? [...(scenario?.observed_steps ?? [])].reverse().find((step) => step.node_id === currentStep?.node_id)?.observation
+    : undefined);
 
   const selectNode = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
@@ -280,8 +295,11 @@ function App() {
           <div className="flow-toolbar">
             <div className="scenario-title"><span className="eyebrow">SCENARIO MAP</span><h2>{scenario ? <><span className="title-method">{scenario.route.method}</span> {scenario.route.path}</> : "Loading route…"}</h2></div>
             <div className="graph-actions">
+              <div className="mode-switch" aria-label="Graph view mode">
+                {(["static", "observed", "both"] as const).map((mode) => <button key={mode} className={displayMode === mode ? "mode-active" : ""} onClick={() => setDisplayMode(mode)}>{mode}</button>)}
+              </div>
               <div className="edge-filters" aria-label="Confidence filters">
-                {(["parsed", "inferred", "observed"] as EdgeKind[]).map((kind) => <button key={kind} className={`filter-chip ${visibleKinds[kind] ? "filter-on" : ""}`} onClick={() => toggleKind(kind)}><span className={`filter-mark mark-${kind}`} />{kind}</button>)}
+                {(["parsed", "inferred", "observed"] as EdgeKind[]).map((kind) => <button key={kind} title={`Toggle ${kind} edges`} className={`filter-chip ${visibleKinds[kind] ? "filter-on" : ""}`} onClick={() => toggleKind(kind)}><span className={`filter-mark mark-${kind}`} />{kind}</button>)}
               </div>
               <span className="toolbar-divider" />
               <button className="fit-button" title="Fit graph" onClick={() => window.dispatchEvent(new Event("codeflow-fit"))}>⊡ Fit view</button>
@@ -290,6 +308,7 @@ function App() {
 
           <div className="canvas-wrap">
             {error && <div className="error-banner">Couldn’t load CodeFlow data: {error}</div>}
+            {displayMode === "observed" && scenario && !scenario.has_observation && <div className="recording-banner">No runtime recording for this route yet. Run <code>codeflow record</code> to add one.</div>}
             {!graph && !error && <div className="canvas-loading"><span className="loading-orbit" />Building your scenario map…</div>}
             {graph && scenario && <ReactFlow
               nodes={flowElements.nodes}
@@ -333,6 +352,10 @@ function App() {
                 return <span className={`code-line ${currentStep?.node_id === selectedNode.id ? "line-in-scenario" : ""}`} key={index} dangerouslySetInnerHTML={{ __html: highlighted || " " }} />;
               })}</code></pre></div> : <div className="no-source">Source is not available for this node.</div>}
             </div>
+            {currentObservation && <div className="observed-values"><div className="section-title"><span>OBSERVED VALUES</span><span className="observed-indicator">● LIVE</span></div>
+              {Object.entries(currentObservation.args).map(([name, value]) => <div className="value-row" key={name}><span>{name}<small>{value.type}</small></span><code>{value.repr}</code></div>)}
+              {currentObservation.return && <div className="value-row return-value"><span>return<small>{currentObservation.return.type}</small></span><code>{currentObservation.return.repr}</code></div>}
+            </div>}
             <div className="connections-section"><div className="section-title"><span>CONNECTIONS</span><span className="connection-count">{incoming.length + outgoing.length}</span></div>
               {incoming.length + outgoing.length ? <div className="connection-list">
                 {incoming.map((edge) => <ConnectionRow key={`in-${edge.id}`} edge={edge} direction="in" graph={graph} />)}
@@ -350,7 +373,8 @@ function App() {
 function ConnectionRow({ edge, direction, graph }: { edge: GraphEdge; direction: "in" | "out"; graph: Graph }) {
   const relatedId = direction === "in" ? edge.source : edge.target;
   const relatedNode = graph.nodes.find((node) => node.id === relatedId);
-  return <div className="connection-row"><span className={`connection-arrow ${direction}`}>{direction === "in" ? "↙" : "↗"}</span><div><strong>{relatedNode?.name ?? relatedId}</strong><small>{direction === "in" ? "from" : "to"} · {edge.type.replace("_", " ")}</small></div><span className={`mini-confidence confidence-${edge.kind}`}>{edge.meta.ghost ? "ghost" : edge.kind}</span></div>;
+  const confidence = edge.meta.observed ? "observed" : edge.kind;
+  return <div className="connection-row"><span className={`connection-arrow ${direction}`}>{direction === "in" ? "↙" : "↗"}</span><div><strong>{relatedNode?.name ?? relatedId}</strong><small>{direction === "in" ? "from" : "to"} · {edge.type.replace("_", " ")}</small></div><span className={`mini-confidence confidence-${confidence}`}>{edge.meta.ghost ? "ghost" : confidence}</span></div>;
 }
 
 function FitViewEvent() {

@@ -1,10 +1,9 @@
 """Cycle-safe ordering and depth behavior for scenario traversal."""
 
+from codeflow.cli import app
 from codeflow.schema import Edge, Graph, GraphNode, Route
 from codeflow.tracing.scenario import trace_scenario
 from typer.testing import CliRunner
-
-from codeflow.cli import app
 
 
 def test_scenario_breadth_first_cycle_safe_and_depth_limited() -> None:

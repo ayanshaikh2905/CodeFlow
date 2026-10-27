@@ -2,9 +2,8 @@
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from codeflow_server.app import create_app
+from fastapi.testclient import TestClient
 
 
 def test_server_graph_routes_scenario_and_source() -> None:

@@ -1,6 +1,7 @@
 """Dependencies shared by API routes."""
 
-from collections.abc import Generator
+import os
+from collections.abc import AsyncGenerator
 
 import httpx
 from fastapi import Depends, Header, HTTPException
@@ -20,7 +21,14 @@ def get_current_user(
     return user
 
 
-def get_http_client() -> Generator[httpx.AsyncClient, None, None]:
+async def get_http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """Provide a close-after-request HTTP client; tests replace its transport."""
-    with httpx.AsyncClient(timeout=5.0) as client:
-        yield client
+    if os.environ.get("CODEFLOW_DEMO_MOCK_PAYMENTS") == "1":
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"id": "demo-charge"})
+        )
+        async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
+            yield client
+    else:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            yield client

@@ -3,10 +3,9 @@
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from codeflow.cli import app
 from codeflow.graph.builder import GraphBuilder
+from typer.testing import CliRunner
 
 
 def test_demo_app_detects_routes_calls_models_tables_and_http() -> None:

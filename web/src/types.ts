@@ -41,6 +41,17 @@ export interface ScenarioStep {
   edge_id?: string | null;
   depth: number;
   order: number;
+  observation?: RuntimeObservation | null;
+}
+
+export interface ValueSummary {
+  type: string;
+  repr: string;
+}
+
+export interface RuntimeObservation {
+  args: Record<string, ValueSummary>;
+  return: ValueSummary | null;
 }
 
 export interface Scenario {
@@ -48,6 +59,9 @@ export interface Scenario {
   steps: ScenarioStep[];
   tables_read: string[];
   tables_written: string[];
+  mode?: "static" | "observed" | "both";
+  has_observation?: boolean;
+  observed_steps?: Array<ScenarioStep & { observation?: RuntimeObservation }>;
 }
 
 export interface SourcePayload {

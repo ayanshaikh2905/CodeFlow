@@ -2,15 +2,14 @@
 
 import httpx
 import pytest
+from demo_app.database import get_session
+from demo_app.dependencies import get_http_client
+from demo_app.main import create_app
+from demo_app.models import Base, Product, User
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from demo_app.database import get_session, make_engine
-from demo_app.dependencies import get_http_client
-from demo_app.main import create_app
-from demo_app.models import Base, Product, User
 
 
 @pytest.fixture

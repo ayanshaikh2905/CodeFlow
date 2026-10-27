@@ -1,6 +1,6 @@
 """SQLAlchemy 2.0 ORM models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -36,7 +36,7 @@ class Order(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending")
     total: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
     user: Mapped[User] = relationship(back_populates="orders")
     items: Mapped[list["OrderItem"]] = relationship(

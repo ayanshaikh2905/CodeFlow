@@ -1,13 +1,15 @@
 """SQLAlchemy engine and session dependency."""
 
-from collections.abc import Generator
 import os
+from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-DATABASE_URL = os.environ.get("CODEFLOW_DEMO_DATABASE_URL", "sqlite:///./codeflow_demo.db")
+DATABASE_URL = os.environ.get(
+    "CODEFLOW_DEMO_DATABASE_URL", "sqlite:///./codeflow_demo.db"
+)
 
 
 def make_engine(url: str = DATABASE_URL) -> Engine:

@@ -1,9 +1,10 @@
 """FastAPI read-only endpoints for an analyzed project."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from codeflow.graph.builder import GraphBuilder
+from codeflow.runtime.recorder import load_recorded_graph
 from codeflow.schema import Graph, GraphNode
 from codeflow.tracing.scenario import trace_scenario
 from fastapi import FastAPI, HTTPException, Query
@@ -13,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 def create_app(project: Path, web_dist: Path | None = None) -> FastAPI:
     """Analyze ``project`` once and serve its graph, routes, scenarios and source."""
     root = project.resolve()
-    graph = GraphBuilder().analyze(root)
+    graph = load_recorded_graph(root, GraphBuilder().analyze(root))
     app = FastAPI(title="CodeFlow API", version="0.1.0")
     app.state.project_root = root
     app.state.graph = graph
@@ -30,9 +31,42 @@ def create_app(project: Path, web_dist: Path | None = None) -> FastAPI:
     def get_scenario(
         route: str = Query(..., description='Route selector, e.g. "POST /orders".'),
         max_depth: int = Query(default=8, ge=0, le=64),
+        mode: Literal["static", "observed", "both"] = Query(default="static"),
     ) -> dict[str, Any]:
         try:
-            return trace_scenario(graph, route, max_depth=max_depth).model_dump(mode="json")
+            scenario = trace_scenario(graph, route, max_depth=max_depth)
+            observed_routes = graph.meta.get("observed_routes", {})
+            observations = observed_routes.get(scenario.route.id, [])
+            payload = scenario.model_dump(mode="json")
+            payload["mode"] = mode
+            payload["has_observation"] = bool(observations)
+            observed_steps = [
+                {
+                    "node_id": observed["node_id"],
+                    "edge_id": observed.get("edge_id"),
+                    "depth": order + 1,
+                    "order": order + 1,
+                    "observation": {
+                        "args": observed.get("args", {}),
+                        "return": observed.get("return"),
+                    },
+                }
+                for order, observed in enumerate(observations)
+            ]
+            payload["observed_steps"] = observed_steps
+            if mode == "observed" and observations:
+                runtime_steps: list[dict[str, Any]] = [
+                    {
+                        "node_id": scenario.route.id,
+                        "edge_id": None,
+                        "depth": 0,
+                        "order": 0,
+                        "observation": None,
+                    }
+                ]
+                runtime_steps.extend(observed_steps)
+                payload["steps"] = runtime_steps
+            return payload
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -47,9 +47,7 @@ def get_order(session: Session, order_id: int, user_id: int) -> Order:
     return order
 
 
-async def charge_with_httpx(
-    client: httpx.AsyncClient, order: Order
-) -> dict[str, Any]:
+async def charge_with_httpx(client: httpx.AsyncClient, order: Order) -> dict[str, Any]:
     """Call the external payment endpoint."""
     response = await client.post(
         "https://payments.example.test/charges",
