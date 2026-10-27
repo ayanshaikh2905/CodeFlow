@@ -60,7 +60,7 @@ def test_analyze_cli_writes_graph_json(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     output = tmp_path / "out" / "graph.json"
-    result = CliRunner().invoke(app, [str(tmp_path), "-o", str(output)])
+    result = CliRunner().invoke(app, ["analyze", str(tmp_path), "-o", str(output)])
     assert result.exit_code == 0, result.output
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["routes"][0]["path"] == "/health"
