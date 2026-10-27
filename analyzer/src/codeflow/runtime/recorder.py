@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -31,6 +32,9 @@ def record_request(
     selector: str,
     payload_path: Path | None,
     graph: Graph | None = None,
+    *,
+    path_params: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> Graph:
     """Invoke one API route with ``TestClient`` and attach observed evidence."""
     root = project.resolve()
@@ -38,39 +42,30 @@ def record_request(
     route = _find_route(result, selector)
     body = _read_payload(payload_path)
     app = _load_app(root)
-    runtime_path = re.sub(r"\{[^{}]+\}", "1", route.path)
-    headers = _headers_for_route(app, route)
+    runtime_path = _route_path(route.path, path_params or {})
     recorder = _ObservedRecorder(root, result, route)
-    prior_mock_setting = os.environ.get("CODEFLOW_DEMO_MOCK_PAYMENTS")
-    os.environ["CODEFLOW_DEMO_MOCK_PAYMENTS"] = "1"
-    try:
-        monitoring_scope = _monitoring_context(recorder)
-        if monitoring_scope is not None:
-            with monitoring_scope, TestClient(app) as client:
+    monitoring_scope = _monitoring_context(recorder)
+    if monitoring_scope is not None:
+        with monitoring_scope, TestClient(app) as client:
+            response = client.request(
+                route.method,
+                runtime_path,
+                headers=headers,
+                **({"json": body} if body is not None else {}),
+            )
+    else:
+        previous_thread_profile = threading.getprofile()
+        threading.setprofile(recorder.profile_callback)
+        try:
+            with TestClient(_profiled_app(app, recorder)) as client:
                 response = client.request(
                     route.method,
                     runtime_path,
                     headers=headers,
                     **({"json": body} if body is not None else {}),
                 )
-        else:
-            previous_thread_profile = threading.getprofile()
-            threading.setprofile(recorder.profile_callback)
-            try:
-                with TestClient(_profiled_app(app, recorder)) as client:
-                    response = client.request(
-                        route.method,
-                        runtime_path,
-                        headers=headers,
-                        **({"json": body} if body is not None else {}),
-                    )
-            finally:
-                threading.setprofile(previous_thread_profile)
-    finally:
-        if prior_mock_setting is None:
-            os.environ.pop("CODEFLOW_DEMO_MOCK_PAYMENTS", None)
-        else:
-            os.environ["CODEFLOW_DEMO_MOCK_PAYMENTS"] = prior_mock_setting
+        finally:
+            threading.setprofile(previous_thread_profile)
 
     recorder.finalize()
     result.meta["recording"] = {
@@ -374,19 +369,24 @@ def _looks_like_fastapi_app(tree: ast.Module) -> bool:
     return False
 
 
-def _headers_for_route(app: FastAPI, route: Route) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    try:
-        operation = app.openapi().get("paths", {}).get(route.path, {}).get(route.method.lower(), {})
-    except Exception:
-        return headers
-    for parameter in operation.get("parameters", []):
-        if parameter.get("in") != "header" or not parameter.get("required"):
-            continue
-        name = str(parameter.get("name", ""))
-        if name.lower() in {"x-user-id", "x-userid"}:
-            headers[name] = "1"
-    return headers
+def _route_path(path: str, values: dict[str, str]) -> str:
+    """Substitute only caller-supplied values into a templated route path."""
+    parameter_names = re.findall(r"\{([^{}:]+)(?::[^{}]+)?\}", path)
+    missing = sorted(set(parameter_names) - values.keys())
+    unused = sorted(values.keys() - set(parameter_names))
+    if missing:
+        names = ", ".join(missing)
+        raise ValueError(f"Provide values for route path parameter(s): {names}.")
+    if unused:
+        names = ", ".join(unused)
+        raise ValueError(f"Unknown route path parameter(s): {names}.")
+    if any(not values[name] for name in parameter_names):
+        raise ValueError("Route path parameter values cannot be empty.")
+    return re.sub(
+        r"\{([^{}:]+)(?::[^{}]+)?\}",
+        lambda match: quote(values[match.group(1)], safe=""),
+        path,
+    )
 
 
 def _module_name(relative: Path) -> str:

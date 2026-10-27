@@ -17,7 +17,7 @@ py -m venv .venv
 ```
 
 ```powershell
-python -m pip install -e "analyzer[dev]" -e server -e "demo_app[test]"
+python -m pip install -e "analyzer[dev]" -e server
 ```
 
 ```powershell
@@ -25,19 +25,20 @@ Set-Location web; npm ci; npm run build; Set-Location ..
 ```
 
 ```powershell
-codeflow serve demo_app
+codeflow serve "C:\path\to\your\python-backend"
 ```
 
-Open <http://127.0.0.1:8000>, choose a route, then use the playback controls to inspect its scenario. The demo seeds a local SQLite database with a user and two products.
+Open <http://127.0.0.1:8000>, choose a route, then use the playback controls to inspect its scenario. Select **Open project** to switch to another local folder or enter a GitHub repository URL, such as `https://github.com/owner/repository`. Git must be installed for GitHub repositories; CodeFlow uses your configured Git authentication and reads the default branch without running repository setup scripts. The repository files are held in a temporary directory for the running server and removed when it exits.
 
-To record the `POST /orders` example before starting the server, create a JSON payload and record it:
+The included `demo_app` is an analyzer fixture. Its SQLite schema starts empty and CodeFlow does not insert sample users or products.
+
+To capture runtime evidence for a route in a project you selected, run `record` with a payload that matches that app before starting or restarting the viewer:
 
 ```powershell
-'{"items":[{"product_id":1,"quantity":1}]}' | Set-Content "$env:TEMP\codeflow-payload.json"
-codeflow record demo_app --route "POST /orders" --payload "$env:TEMP\codeflow-payload.json"
+codeflow record "C:\path\to\your\python-backend" --route "POST /orders/{order_id}/pay" --path-params '{"order_id":"42"}' --header "X-User-ID: 7" --payload "C:\path\to\payload.json"
 ```
 
-Then run `codeflow serve demo_app`. The server loads `demo_app/graph.observed.json` at startup. `record` replaces that file by default; use `-o` to write elsewhere. Runtime mode exposes observed calls, while Both keeps static and observed edges visible together.
+`record` uses only the path parameters, headers, and JSON body you supply; it does not invent user IDs or request values. It invokes the selected application route, so it can perform that application's normal writes and outbound calls. It does not replace external services with mock responses. Runtime mode shows the captured calls; Both keeps static and observed edges visible together.
 
 ## Architecture
 
@@ -77,9 +78,11 @@ Static calls that cannot be resolved are represented by inferred edges to `unres
 ```text
 codeflow analyze <path> -o graph.json
 codeflow trace <path> --route "POST /orders" [-o scenario.json] [--max-depth 8]
-codeflow record <path> --route "POST /orders" [--payload payload.json] [-o graph.observed.json]
-codeflow serve <path> [--host 127.0.0.1] [--port 8000]
+codeflow record <path> --route "POST /orders" [--path-params '{"id":"42"}'] [--header "Name: Value"] [--payload payload.json] [-o graph.observed.json]
+codeflow serve <local-folder-or-github-url> [--host 127.0.0.1] [--port 8000]
 ```
+
+The viewer's project picker accepts a local folder path or a GitHub HTTPS repository URL. Local paths are analyzed in place. GitHub repositories are cloned into a temporary local directory using Git's existing authentication configuration.
 
 The server provides `GET /api/graph`, `GET /api/routes`, `GET /api/scenario?route=...`, and `GET /api/source?node_id=...`. The scenario endpoint accepts `mode=static`, `observed`, or `both`.
 
@@ -88,19 +91,21 @@ The server provides `GET /api/graph`, `GET /api/routes`, `GET /api/scenario?rout
 From the repository root:
 
 ```powershell
+python -m pip install -e "demo_app[test]"
 py -m pytest -q tests
 py -m ruff check analyzer/src/codeflow server/src tests
 py -m mypy analyzer/src/codeflow server/src/codeflow_server
 Set-Location web; npm run build; Set-Location ..
 ```
 
-The demo uses SQLite and an HTTPX mock transport for its payment call in tests and during `record`.
+Tests use isolated SQLite databases and replace external HTTP clients with mock transports. The application and `record` use the configured database and real HTTP client without seeded or fallback records.
 
 ## Known limitations / next steps
 
 - Call resolution is best-effort. Aliases, reflection, runtime-generated routes, complex dependency providers, and indirect dispatch can remain inferred or unresolved.
 - Route tracing is a cycle-safe breadth-first traversal; it is a useful scenario summary, not a full execution scheduler. Runtime order is available only for the one request that was recorded.
-- Recording currently invokes FastAPI applications through `TestClient`, supplies `1` for path parameters, and infers the demo's required `X-User-ID` header from OpenAPI. Projects with other required headers, authentication flows, or request setup may need a future payload/header option.
+- Recording invokes FastAPI applications through `TestClient`; provide any required path parameters, headers, and body explicitly. The request uses the target application's configured database and real outbound HTTP clients.
+- GitHub URLs open the repository's default branch. Git symlinks and subdirectory-only URLs are not included in the temporary source snapshot.
 - Captured values are bounded summaries, not full object snapshots. Sensitive-looking keys are redacted, but custom object representations may contain application-specific data.
 - The Python 3.12+ `sys.monitoring` recorder path is implemented but was not exercised in the Python 3.11 validation environment; the `sys.setprofile` fallback was exercised.
 - The current parser and detectors support Python, FastAPI, and SQLAlchemy 2.x only.

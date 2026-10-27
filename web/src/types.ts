@@ -36,6 +36,12 @@ export interface Graph {
   meta: Record<string, unknown>;
 }
 
+export interface ProjectInfo {
+  location: string;
+  name: string;
+  routes: number;
+}
+
 export interface ScenarioStep {
   node_id: string;
   edge_id?: string | null;

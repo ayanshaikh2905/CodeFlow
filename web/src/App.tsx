@@ -18,12 +18,13 @@ import {
 import dagre from "dagre";
 import Prism from "prismjs";
 import "prismjs/components/prism-python";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import type {
   EdgeKind,
   Graph,
   GraphEdge,
   GraphNode,
+  ProjectInfo,
   Route,
   Scenario,
   SourcePayload,
@@ -100,6 +101,7 @@ function FlowEdgeLine({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 function App() {
   const [graph, setGraph] = useState<Graph | null>(null);
   const [routes, setRoutes] = useState<Route[]>([]);
+  const [projectInfo, setProjectInfo] = useState<ProjectInfo | null>(null);
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [selectedRoute, setSelectedRoute] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
@@ -111,14 +113,21 @@ function App() {
   const [speed, setSpeed] = useState(1);
   const [visibleKinds, setVisibleKinds] = useState<Record<EdgeKind, boolean>>({ parsed: true, inferred: true, observed: true });
   const [error, setError] = useState("");
+  const [projectError, setProjectError] = useState("");
+  const [projectInput, setProjectInput] = useState("");
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectRevision, setProjectRevision] = useState(0);
 
   useEffect(() => {
     Promise.all([
       fetch("/api/graph").then(assertResponse).then((response) => response.json() as Promise<Graph>),
       fetch("/api/routes").then(assertResponse).then((response) => response.json() as Promise<Route[]>),
-    ]).then(([nextGraph, nextRoutes]) => {
+      fetch("/api/project").then(assertResponse).then((response) => response.json() as Promise<ProjectInfo>),
+    ]).then(([nextGraph, nextRoutes, nextProject]) => {
       setGraph(nextGraph);
       setRoutes(nextRoutes);
+      setProjectInfo(nextProject);
       if (nextRoutes.length) setSelectedRoute(`${nextRoutes[0].method} ${nextRoutes[0].path}`);
     }).catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
@@ -135,7 +144,45 @@ function App() {
         setSelectedNodeId(nextScenario.steps[0]?.node_id ?? nextScenario.route.handler_node_id);
       })
       .catch((reason: unknown) => setError(errorMessage(reason)));
-  }, [selectedRoute, displayMode]);
+  }, [selectedRoute, displayMode, projectRevision]);
+
+  const openProject = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const location = projectInput.trim();
+    if (!location) return;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const openResponse = await fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location }),
+      });
+      if (!openResponse.ok) throw new Error(await responseError(openResponse));
+      const nextProject = await openResponse.json() as ProjectInfo;
+      const [graphResponse, routesResponse] = await Promise.all([
+        fetch("/api/graph").then(assertResponse),
+        fetch("/api/routes").then(assertResponse),
+      ]);
+      const [nextGraph, nextRoutes] = await Promise.all([
+        graphResponse.json() as Promise<Graph>,
+        routesResponse.json() as Promise<Route[]>,
+      ]);
+      setProjectInfo(nextProject);
+      setGraph(nextGraph);
+      setRoutes(nextRoutes);
+      setScenario(null);
+      setSelectedNodeId("");
+      setSelectedRoute(nextRoutes.length ? `${nextRoutes[0].method} ${nextRoutes[0].path}` : "");
+      setProjectRevision((revision) => revision + 1);
+      setProjectPickerOpen(false);
+      setProjectInput("");
+    } catch (reason: unknown) {
+      setProjectError(errorMessage(reason));
+    } finally {
+      setProjectBusy(false);
+    }
+  };
 
   const currentStep = scenario?.steps[stepIndex];
   const scenarioNodeIds = useMemo(() => new Set(scenario?.steps.map((step) => step.node_id) ?? []), [scenario]);
@@ -268,7 +315,14 @@ function App() {
       <header className="topbar">
         <div className="brand-lockup"><div className="brand-mark"><span /><span /><span /></div><div><strong>CodeFlow</strong><small>Request explorer</small></div></div>
         <div className="topbar-center"><span className="pulse-dot" /> LOCAL ANALYSIS <span className="topbar-divider" /> {routes.length} ROUTES INDEXED</div>
-        <div className="topbar-right"><span className="version-chip">MVP · PYTHON</span><button className="icon-button" title="Refresh analysis" onClick={() => window.location.reload()}>↻</button></div>
+        <div className="topbar-right"><button className="project-open-button" onClick={() => { setProjectError(""); setProjectPickerOpen((open) => !open); }}>Open project</button><button className="icon-button" title="Refresh analysis" onClick={() => window.location.reload()}>↻</button></div>
+        {projectPickerOpen && <form className="project-picker" onSubmit={openProject}>
+          <label htmlFor="project-location">Open a local folder or GitHub repo</label>
+          <input id="project-location" autoFocus value={projectInput} onChange={(event) => setProjectInput(event.target.value)} placeholder={'C:\\path\\to\\project or https://github.com/owner/repo'} />
+          <small>GitHub repositories open from their default branch. Your files stay on this computer.</small>
+          {projectError && <div className="project-picker-error">{projectError}</div>}
+          <div className="project-picker-actions"><button type="button" className="picker-cancel" onClick={() => setProjectPickerOpen(false)}>Cancel</button><button type="submit" className="picker-open" disabled={projectBusy || !projectInput.trim()}>{projectBusy ? "Opening…" : "Analyze project"}</button></div>
+        </form>}
       </header>
 
       <main className="workspace">
@@ -288,7 +342,7 @@ function App() {
             })}
             {!filteredRoutes.length && <div className="empty-routes">No routes match that search.</div>}
           </div>
-          <div className="sidebar-footer"><span className="local-icon">⌂</span><span><strong>Local project</strong><small>Static graph · deterministic</small></span><span className="connected-indicator" /></div>
+          <div className="sidebar-footer" title={projectInfo?.location ?? ""}><span className="local-icon">⌂</span><span><strong>{projectInfo?.name ?? "Project"}</strong><small>{projectInfo?.location ?? "Waiting for project"}</small></span><span className="connected-indicator" /></div>
         </aside>
 
         <section className="flow-workspace">
@@ -310,6 +364,7 @@ function App() {
             {error && <div className="error-banner">Couldn’t load CodeFlow data: {error}</div>}
             {displayMode === "observed" && scenario && !scenario.has_observation && <div className="recording-banner">No runtime recording for this route yet. Run <code>codeflow record</code> to add one.</div>}
             {!graph && !error && <div className="canvas-loading"><span className="loading-orbit" />Building your scenario map…</div>}
+            {graph && routes.length === 0 && <div className="empty-project-state"><strong>No FastAPI routes found</strong><span>Choose a Python backend folder or GitHub repository. CodeFlow currently detects FastAPI routes and SQLAlchemy models.</span>{Array.isArray(graph.meta.warnings) && graph.meta.warnings.map((warning) => <small key={String(warning)}>{String(warning)}</small>)}</div>}
             {graph && scenario && <ReactFlow
               nodes={flowElements.nodes}
               edges={flowElements.edges}
@@ -395,6 +450,16 @@ function kindGlyph(kind: GraphNode["kind"]): string {
 function assertResponse(response: Response): Response {
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response;
+}
+
+async function responseError(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as { detail?: unknown };
+    if (typeof payload.detail === "string") return payload.detail;
+  } catch {
+    // Use the HTTP status text when the API response is not JSON.
+  }
+  return `${response.status} ${response.statusText}`;
 }
 
 function errorMessage(error: unknown): string {

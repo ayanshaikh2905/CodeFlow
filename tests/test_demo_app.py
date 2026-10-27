@@ -97,3 +97,21 @@ def test_pay_order_uses_mocked_httpx_call(client: TestClient) -> None:
     }
     duplicate = client.post(f"/orders/{order_id}/pay", headers={"X-User-ID": "1"})
     assert duplicate.status_code == 409
+
+
+def test_app_creates_schema_without_seeding_example_rows() -> None:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    app = create_app(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def empty_session():
+        with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = empty_session
+    with TestClient(app) as client:
+        response = client.get("/users/1", headers={"X-User-ID": "1"})
+        assert response.status_code == 401
+    engine.dispose()
