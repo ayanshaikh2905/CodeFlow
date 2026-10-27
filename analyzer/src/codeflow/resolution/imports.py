@@ -10,6 +10,7 @@ from codeflow.parsing.python import ParsedModule
 class SymbolIndex:
     modules: dict[str, ParsedModule]
     ids: dict[str, str]
+    qualified_names: dict[str, str]
 
     @classmethod
     def build(cls, modules: list[ParsedModule]) -> "SymbolIndex":
@@ -20,7 +21,16 @@ class SymbolIndex:
                 for module in modules
                 for symbol, node_id in module.symbol_ids.items()
             },
+            qualified_names={
+                node_id: symbol
+                for module in modules
+                for symbol, node_id in module.symbol_ids.items()
+            },
         )
+
+    def qualified_name(self, node_id: str) -> str | None:
+        """Return the project symbol represented by a stable node id."""
+        return self.qualified_names.get(node_id)
 
     def resolve(
         self, module: ParsedModule, expression: ast.expr, class_name: str | None = None
@@ -37,13 +47,9 @@ class SymbolIndex:
             if isinstance(value, ast.Name):
                 if value.id in {"self", "cls"} and class_name:
                     return self.ids.get(f"{class_name}.{expression.attr}")
-                if value.id in module.module_aliases:
-                    return self._resolve_qualified(
-                        f"{module.module_aliases[value.id]}.{expression.attr}"
-                    )
-                imported = module.import_targets.get(value.id)
-                if imported:
-                    return self._resolve_qualified(f"{imported}.{expression.attr}")
+            qualified = self._qualified_expression(module, expression)
+            if qualified:
+                return self._resolve_qualified(qualified)
             return None
         return None
 
@@ -51,14 +57,17 @@ class SymbolIndex:
         """Return the best qualified import path represented by an expression."""
         if isinstance(expression, ast.Name):
             return module.import_targets.get(expression.id, f"{module.module_name}.{expression.id}")
+        return self._qualified_expression(module, expression)
+
+    @staticmethod
+    def _qualified_expression(module: ParsedModule, expression: ast.expr) -> str | None:
+        if isinstance(expression, ast.Name):
+            return module.module_aliases.get(expression.id) or module.import_targets.get(
+                expression.id, f"{module.module_name}.{expression.id}"
+            )
         if isinstance(expression, ast.Attribute):
-            if isinstance(expression.value, ast.Name):
-                root = module.module_aliases.get(expression.value.id)
-                if root:
-                    return f"{root}.{expression.attr}"
-                root = module.import_targets.get(expression.value.id)
-                if root:
-                    return f"{root}.{expression.attr}"
+            parent = SymbolIndex._qualified_expression(module, expression.value)
+            return f"{parent}.{expression.attr}" if parent else None
         return None
 
     def _resolve_qualified(self, target: str) -> str | None:

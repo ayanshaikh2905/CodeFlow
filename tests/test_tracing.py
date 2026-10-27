@@ -16,7 +16,12 @@ def test_scenario_breadth_first_cycle_safe_and_depth_limited() -> None:
     )
     graph = Graph(
         nodes=[
-            GraphNode(id="api.py::handler", kind="function", name="handler", qualname="handler"),
+            GraphNode(
+                id="api.py::handler",
+                kind="function",
+                name="handler",
+                qualname="handler",
+            ),
             GraphNode(id="api.py::one", kind="function", name="one", qualname="one"),
             GraphNode(id="api.py::two", kind="function", name="two", qualname="two"),
         ],
@@ -29,10 +34,34 @@ def test_scenario_breadth_first_cycle_safe_and_depth_limited() -> None:
                 type="calls",
                 kind="parsed",
             ),
-            Edge(id="a", source="api.py::handler", target="api.py::one", type="calls", kind="parsed"),
-            Edge(id="b", source="api.py::handler", target="api.py::two", type="calls", kind="parsed"),
-            Edge(id="c", source="api.py::one", target="api.py::two", type="calls", kind="parsed"),
-            Edge(id="d", source="api.py::two", target="api.py::handler", type="calls", kind="parsed"),
+            Edge(
+                id="a",
+                source="api.py::handler",
+                target="api.py::one",
+                type="calls",
+                kind="parsed",
+            ),
+            Edge(
+                id="b",
+                source="api.py::handler",
+                target="api.py::two",
+                type="calls",
+                kind="parsed",
+            ),
+            Edge(
+                id="c",
+                source="api.py::one",
+                target="api.py::two",
+                type="calls",
+                kind="parsed",
+            ),
+            Edge(
+                id="d",
+                source="api.py::two",
+                target="api.py::handler",
+                type="calls",
+                kind="parsed",
+            ),
         ],
     )
     scenario = trace_scenario(graph, "GET /x", max_depth=2)
@@ -43,7 +72,10 @@ def test_scenario_breadth_first_cycle_safe_and_depth_limited() -> None:
         "api.py::two",
     ]
     assert [step.depth for step in scenario.steps] == [0, 1, 2, 2]
-    assert trace_scenario(graph, "GET /x", max_depth=1).steps[-1].node_id == "api.py::handler"
+    assert (
+        trace_scenario(graph, "GET /x", max_depth=1).steps[-1].node_id
+        == "api.py::handler"
+    )
 
 
 def test_trace_cli_prints_summary_and_saves_json(tmp_path) -> None:

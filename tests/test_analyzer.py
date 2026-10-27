@@ -19,8 +19,21 @@ def test_demo_app_detects_routes_calls_models_tables_and_http() -> None:
         "POST /orders/{order_id}/pay",
     }
     node_names = {node.name for node in graph.nodes}
-    assert {"User", "Order", "OrderItem", "Product", "users", "orders", "order_items", "products"} <= node_names
-    assert any(edge.type == "http_call" and edge.meta.get("url") == "https://payments.example.test/charges" for edge in graph.edges)
+    assert {
+        "User",
+        "Order",
+        "OrderItem",
+        "Product",
+        "users",
+        "orders",
+        "order_items",
+        "products",
+    } <= node_names
+    assert any(
+        edge.type == "http_call"
+        and edge.meta.get("url") == "https://payments.example.test/charges"
+        for edge in graph.edges
+    )
     node_by_id = {node.id: node for node in graph.nodes}
     assert any(
         edge.type == "depends_on" and node_by_id[edge.target].name == "get_current_user"
@@ -40,18 +53,23 @@ def test_demo_app_detects_routes_calls_models_tables_and_http() -> None:
     json.loads(graph.model_dump_json())
 
 
-def test_python_parser_resolves_import_aliases_and_relative_paths(tmp_path: Path) -> None:
+def test_python_parser_resolves_import_aliases_and_relative_paths(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "pkg" / "service.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "pkg" / "service.py").write_text(
+        "def run():\n    return 1\n\nclass Worker:\n    def run(self):\n        return 2\n",
+        encoding="utf-8",
+    )
     (tmp_path / "pkg" / "api.py").write_text(
-        "from .service import run as execute\n\ndef endpoint():\n    return execute()\n",
+        "from .service import run as execute, Worker\n\ndef endpoint(worker: Worker):\n    execute()\n    return worker.run()\n",
         encoding="utf-8",
     )
     graph = GraphBuilder().analyze(tmp_path)
-    call = next(edge for edge in graph.edges if edge.type == "calls")
-    assert call.source == "pkg/api.py::pkg.api.endpoint"
-    assert call.target == "pkg/service.py::pkg.service.run"
+    calls = {edge.target for edge in graph.edges if edge.type == "calls"}
+    assert "pkg/service.py::pkg.service.run" in calls
+    assert "pkg/service.py::pkg.service.Worker.run" in calls
 
 
 def test_analyze_cli_writes_graph_json(tmp_path: Path) -> None:
@@ -65,5 +83,3 @@ def test_analyze_cli_writes_graph_json(tmp_path: Path) -> None:
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["routes"][0]["path"] == "/health"
     assert "Wrote" in result.output
-
-

@@ -1,5 +1,6 @@
 """Command-line entry point for CodeFlow."""
 
+import importlib
 import json
 from pathlib import Path
 from typing import Annotated
@@ -54,6 +55,24 @@ def trace(
         typer.echo(json.dumps(scenario.model_dump(mode="json"), indent=2))
     else:
         typer.echo(f"Wrote scenario JSON to {output}.")
+
+
+@app.command()
+def serve(
+    project: Annotated[Path, typer.Argument(exists=True, file_okay=False, readable=True)],
+    host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, help="HTTP port.")] = 8000,
+) -> None:
+    """Serve graph APIs and the built viewer for a Python project."""
+    try:
+        import uvicorn
+
+        server_app = importlib.import_module("codeflow_server.app")
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "Install the server package with `pip install -e server`."
+        ) from exc
+    uvicorn.run(server_app.create_app(project), host=host, port=port)
 
 
 if __name__ == "__main__":

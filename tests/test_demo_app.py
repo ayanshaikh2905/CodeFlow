@@ -58,7 +58,12 @@ def test_routes_create_and_read_order(client: TestClient) -> None:
     response = client.post(
         "/orders",
         headers=headers,
-        json={"items": [{"product_id": 1, "quantity": 2}, {"product_id": 2, "quantity": 1}]},
+        json={
+            "items": [
+                {"product_id": 1, "quantity": 2},
+                {"product_id": 2, "quantity": 1},
+            ]
+        },
     )
     assert response.status_code == 201
     order = response.json()
@@ -83,9 +88,7 @@ def test_pay_order_uses_mocked_httpx_call(client: TestClient) -> None:
         json={"items": [{"product_id": 1, "quantity": 1}]},
     )
     order_id = created.json()["id"]
-    payment = client.post(
-        f"/orders/{order_id}/pay", headers={"X-User-ID": "1"}
-    )
+    payment = client.post(f"/orders/{order_id}/pay", headers={"X-User-ID": "1"})
     assert payment.status_code == 200
     assert payment.json() == {
         "order_id": order_id,
@@ -93,8 +96,5 @@ def test_pay_order_uses_mocked_httpx_call(client: TestClient) -> None:
         "provider": "card",
         "transaction_id": "charge-123",
     }
-    duplicate = client.post(
-        f"/orders/{order_id}/pay", headers={"X-User-ID": "1"}
-    )
+    duplicate = client.post(f"/orders/{order_id}/pay", headers={"X-User-ID": "1"})
     assert duplicate.status_code == 409
-

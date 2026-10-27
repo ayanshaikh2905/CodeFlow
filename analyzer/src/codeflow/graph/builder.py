@@ -121,6 +121,8 @@ class GraphBuilder:
                             continue
                         if _is_http_call(module, call):
                             continue
+                        if _is_known_external_call(module, call):
+                            continue
                         unresolved_name = call.func.attr
                     elif isinstance(call.func, ast.Name):
                         unresolved_name = call.func.id
@@ -128,6 +130,7 @@ class GraphBuilder:
                             unresolved_name in module.import_targets
                             or unresolved_name in module.symbol_ids
                             or hasattr(builtins, unresolved_name)
+                            or _is_external_factory_alias(module, unresolved_name)
                         ):
                             continue
                     else:
@@ -232,18 +235,12 @@ def _local_types(
         if argument.annotation:
             target = index.resolve(module, argument.annotation)
             if target:
-                result[argument.arg] = next(
-                    (name for name, node_id in module.symbol_ids.items() if node_id == target),
-                    "",
-                )
+                result[argument.arg] = index.qualified_name(target) or ""
     for statement in ast.walk(definition):
         if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             target = index.resolve(module, statement.annotation)
             if target:
-                result[statement.target.id] = next(
-                    (name for name, node_id in module.symbol_ids.items() if node_id == target),
-                    "",
-                )
+                result[statement.target.id] = index.qualified_name(target) or ""
         elif (
             isinstance(statement, ast.Assign)
             and isinstance(statement.value, ast.Call)
@@ -251,9 +248,7 @@ def _local_types(
         ):
             target = index.resolve(module, statement.value.func)
             if target:
-                class_name = next(
-                    (name for name, node_id in module.symbol_ids.items() if node_id == target), None
-                )
+                class_name = index.qualified_name(target)
                 if class_name:
                     for name in statement.targets:
                         if isinstance(name, ast.Name):
@@ -293,4 +288,48 @@ def _is_http_call(module: ParsedModule, call: ast.Call) -> bool:
         }
     if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
         return module.module_aliases.get(base.value.id, "") in {"requests", "httpx", "aiohttp"}
+    return False
+
+
+def _is_known_external_call(module: ParsedModule, call: ast.Call) -> bool:
+    if not isinstance(call.func, ast.Attribute):
+        return False
+    method = call.func.attr
+    if method in {
+        "add",
+        "append",
+        "close",
+        "commit",
+        "delete",
+        "filter",
+        "first",
+        "get",
+        "json",
+        "options",
+        "query",
+        "raise_for_status",
+        "refresh",
+        "startswith",
+    }:
+        return True
+    base = call.func.value
+    if isinstance(base, ast.Name) and base.id in module.module_aliases:
+        # Calls into imported packages are library behavior; HTTP requests are
+        # represented separately by the outbound-call detector.
+        return True
+    return False
+
+
+def _is_external_factory_alias(module: ParsedModule, name: str) -> bool:
+    for statement in module.tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if not any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            continue
+        value = statement.value
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Name):
+            continue
+        if value.func.id in module.import_targets:
+            return True
     return False
