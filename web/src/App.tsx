@@ -103,6 +103,7 @@ function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [projectInfo, setProjectInfo] = useState<ProjectInfo | null>(null);
   const [scenario, setScenario] = useState<Scenario | null>(null);
+  const [viewMode, setViewMode] = useState<"scenario" | "master">("master");
   const [selectedRoute, setSelectedRoute] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [displayMode, setDisplayMode] = useState<"static" | "observed" | "both">("static");
@@ -128,6 +129,7 @@ function App() {
       setGraph(nextGraph);
       setRoutes(nextRoutes);
       setProjectInfo(nextProject);
+      setSelectedNodeId(nextRoutes[0]?.handler_node_id ?? nextGraph.nodes[0]?.id ?? "");
       if (nextRoutes.length) setSelectedRoute(`${nextRoutes[0].method} ${nextRoutes[0].path}`);
     }).catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
@@ -141,10 +143,10 @@ function App() {
       .then((response) => response.json() as Promise<Scenario>)
       .then((nextScenario) => {
         setScenario(nextScenario);
-        setSelectedNodeId(nextScenario.steps[0]?.node_id ?? nextScenario.route.handler_node_id);
+        if (viewMode === "scenario") setSelectedNodeId(nextScenario.steps[0]?.node_id ?? nextScenario.route.handler_node_id);
       })
       .catch((reason: unknown) => setError(errorMessage(reason)));
-  }, [selectedRoute, displayMode, projectRevision]);
+  }, [selectedRoute, displayMode, projectRevision, viewMode]);
 
   const openProject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -172,7 +174,7 @@ function App() {
       setGraph(nextGraph);
       setRoutes(nextRoutes);
       setScenario(null);
-      setSelectedNodeId("");
+      setSelectedNodeId(nextRoutes[0]?.handler_node_id ?? nextGraph.nodes[0]?.id ?? "");
       setSelectedRoute(nextRoutes.length ? `${nextRoutes[0].method} ${nextRoutes[0].path}` : "");
       setProjectRevision((revision) => revision + 1);
       setProjectPickerOpen(false);
@@ -186,9 +188,33 @@ function App() {
 
   const currentStep = scenario?.steps[stepIndex];
   const scenarioNodeIds = useMemo(() => new Set(scenario?.steps.map((step) => step.node_id) ?? []), [scenario]);
+  const projectTouchpoints = useMemo(() => {
+    const nodeMap = new Map((graph?.nodes ?? []).map((node) => [node.id, node]));
+    const reads = new Set<string>();
+    const writes = new Set<string>();
+    for (const edge of graph?.edges ?? []) {
+      if (edge.type !== "reads" && edge.type !== "writes") continue;
+      const target = nodeMap.get(edge.target);
+      if (target) (edge.type === "reads" ? reads : writes).add(target.name);
+    }
+    return { reads: [...reads].sort(), writes: [...writes].sort() };
+  }, [graph]);
 
   const visibleGraph = useMemo(() => {
-    if (!graph || !scenario) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
+    if (!graph) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
+    if (viewMode === "master") {
+      const reads = new Set<string>();
+      const writes = new Set<string>();
+      for (const edge of graph.edges) {
+        if (edge.type === "reads") reads.add(edge.target);
+        if (edge.type === "writes") writes.add(edge.target);
+      }
+      return {
+        nodes: graph.nodes.map((node) => ({ ...node, meta: { ...node.meta, read: reads.has(node.id), write: writes.has(node.id) } })),
+        edges: graph.edges,
+      };
+    }
+    if (!scenario) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
     const included = new Set(scenarioNodeIds);
     const candidateEdges = graph.edges.filter((edge) => scenarioNodeIds.has(edge.source));
     for (const edge of candidateEdges) {
@@ -203,10 +229,10 @@ function App() {
     const tableWrites = new Set(scenario.tables_written);
     const nodes = [...included].map((id) => nodeMap.get(id)).filter((node): node is GraphNode => Boolean(node));
     return { nodes: nodes.map((node) => ({ ...node, meta: { ...node.meta, read: node.kind === "table" && tableReads.has(node.name), write: node.kind === "table" && tableWrites.has(node.name) } })), edges };
-  }, [graph, scenario, scenarioNodeIds]);
+  }, [graph, scenario, scenarioNodeIds, viewMode]);
 
   const flowElements = useMemo(() => {
-    if (!scenario) return { nodes: [] as CodeFlowNode[], edges: [] as CodeFlowEdge[] };
+    if (!scenario && viewMode !== "master") return { nodes: [] as CodeFlowNode[], edges: [] as CodeFlowEdge[] };
     const layout = new dagre.graphlib.Graph();
     layout.setDefaultEdgeLabel(() => ({}));
     layout.setGraph({ rankdir: "LR", ranksep: 95, nodesep: 44, marginx: 32, marginy: 36 });
@@ -214,7 +240,7 @@ function App() {
     visibleGraph.nodes.forEach((node) => layout.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
     visibleGraph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)).forEach((edge) => layout.setEdge(edge.source, edge.target));
     dagre.layout(layout);
-    const nodePositions = new Map(scenario.steps.map((step) => [step.node_id, step.order]));
+    const nodePositions = new Map((scenario?.steps ?? []).map((step) => [step.node_id, step.order]));
     const nodes = visibleGraph.nodes.map((node) => {
       const point = layout.node(node.id);
       const position = { x: point.x - NODE_WIDTH / 2, y: point.y - NODE_HEIGHT / 2 };
@@ -225,7 +251,7 @@ function App() {
         data: {
           graphNode: node,
           badges: [node.meta.read ? "R" : "", node.meta.write ? "W" : ""].filter(Boolean) as string[],
-          active: node.id === currentStep?.node_id,
+          active: viewMode === "scenario" && node.id === currentStep?.node_id,
         },
         zIndex: nodePositions.get(node.id) ?? 0,
       };
@@ -235,7 +261,7 @@ function App() {
       if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return false;
       const observed = Boolean(edge.meta.observed) || edge.kind === "observed";
       if (displayMode === "static" && edge.kind === "observed") return false;
-      if (displayMode === "observed" && !observed && !["reads", "writes", "http_call"].includes(edge.type)) return false;
+      if (viewMode === "scenario" && displayMode === "observed" && !observed && !["reads", "writes", "http_call"].includes(edge.type)) return false;
       const confidence = displayMode === "observed" && observed ? "observed" : edge.kind;
       return visibleKinds[confidence as EdgeKind];
     }).map((edge) => {
@@ -251,16 +277,16 @@ function App() {
         confidence,
         flowType: edge.type,
         ghost: Boolean(edge.meta.ghost),
-        active: edge.id === activeEdgeId,
+        active: viewMode === "scenario" && edge.id === activeEdgeId,
         mechanism: typeof edge.meta.mechanism === "string" ? edge.meta.mechanism : undefined,
       },
     });
     });
     return { nodes, edges };
-  }, [visibleGraph, scenario, currentStep, visibleKinds, displayMode]);
+  }, [visibleGraph, scenario, currentStep, visibleKinds, displayMode, viewMode]);
 
   useEffect(() => {
-    if (!playing || !scenario) return;
+    if (!playing || !scenario || viewMode !== "scenario") return;
     const timer = window.setInterval(() => {
       setStepIndex((index) => {
         if (index >= scenario.steps.length - 1) {
@@ -271,7 +297,7 @@ function App() {
       });
     }, 950 / speed);
     return () => window.clearInterval(timer);
-  }, [playing, scenario, speed]);
+  }, [playing, scenario, speed, viewMode]);
 
   useEffect(() => {
     if (!selectedNodeId) return;
@@ -309,12 +335,15 @@ function App() {
   };
 
   const toggleKind = (kind: EdgeKind) => setVisibleKinds((current) => ({ ...current, [kind]: !current[kind] }));
+  const nodeKindCounts = (Object.keys({ module: 0, function: 0, class: 0, route: 0, model: 0, table: 0, external: 0 }) as GraphNode["kind"][])
+    .map((kind) => ({ kind, label: ({ module: "Modules", function: "Functions", class: "Classes", route: "Routes", model: "Models", table: "Tables", external: "External" })[kind], count: graph?.nodes.filter((node) => node.kind === kind).length ?? 0 }))
+    .filter(({ count }) => count > 0);
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup"><div className="brand-mark"><span /><span /><span /></div><div><strong>CodeFlow</strong><small>Request explorer</small></div></div>
-        <div className="topbar-center"><span className="pulse-dot" /> LOCAL ANALYSIS <span className="topbar-divider" /> {routes.length} ROUTES INDEXED</div>
+        <div className="topbar-center"><span className="pulse-dot" /> LOCAL ANALYSIS <span className="topbar-divider" /> {viewMode === "master" ? `${graph?.nodes.length ?? 0} NODES · ${graph?.edges.length ?? 0} EDGES` : `${routes.length} ROUTES INDEXED`}</div>
         <div className="topbar-right"><button className="project-open-button" onClick={() => { setProjectError(""); setProjectPickerOpen((open) => !open); }}>Open project</button><button className="icon-button" title="Refresh analysis" onClick={() => window.location.reload()}>↻</button></div>
         {projectPickerOpen && <form className="project-picker" onSubmit={openProject}>
           <label htmlFor="project-location">Open a local folder or GitHub repo</label>
@@ -327,31 +356,41 @@ function App() {
 
       <main className="workspace">
         <aside className="route-sidebar">
-          <div className="sidebar-heading"><div><span className="eyebrow">SCENARIO</span><h1>Request flows</h1></div><span className="route-count">{routes.length}</span></div>
-          <label className="search-box"><span>⌕</span><input value={routeSearch} onChange={(event) => setRouteSearch(event.target.value)} placeholder="Find an endpoint" /><kbd>⌘ K</kbd></label>
-          <div className="route-list-label"><span>ENDPOINTS</span><span>METHOD · PATH</span></div>
-          <div className="route-list">
-            {filteredRoutes.map((route) => {
-              const label = `${route.method} ${route.path}`;
-              const active = selectedRoute === label;
-              return <button key={route.id} className={`route-item ${active ? "route-active" : ""}`} onClick={() => setSelectedRoute(label)}>
-                <span className={`method-pill method-${route.method.toLowerCase()}`}>{route.method}</span>
-                <span className="route-path">{route.path}</span>
-                {active && <span className="route-chevron">›</span>}
-              </button>;
-            })}
-            {!filteredRoutes.length && <div className="empty-routes">No routes match that search.</div>}
+          <div className="sidebar-heading"><div><span className="eyebrow">{viewMode === "master" ? "PROJECT MAP" : "SCENARIO"}</span><h1>{viewMode === "master" ? "Master flow" : "Request flows"}</h1></div><span className="route-count">{viewMode === "master" ? graph?.nodes.length ?? 0 : routes.length}</span></div>
+          <div className="view-switch" aria-label="Flowchart scope">
+            <button className={viewMode === "scenario" ? "view-active" : ""} onClick={() => { setPlaying(false); setViewMode("scenario"); }}>Scenarios</button>
+            <button className={viewMode === "master" ? "view-active" : ""} onClick={() => { setPlaying(false); setViewMode("master"); }}>Master</button>
           </div>
+          {viewMode === "scenario" ? <>
+            <label className="search-box"><span>⌕</span><input value={routeSearch} onChange={(event) => setRouteSearch(event.target.value)} placeholder="Find an endpoint" /><kbd>⌘ K</kbd></label>
+            <div className="route-list-label"><span>ENDPOINTS</span><span>METHOD · PATH</span></div>
+            <div className="route-list">
+              {filteredRoutes.map((route) => {
+                const label = `${route.method} ${route.path}`;
+                const active = selectedRoute === label;
+                return <button key={route.id} className={`route-item ${active ? "route-active" : ""}`} onClick={() => setSelectedRoute(label)}>
+                  <span className={`method-pill method-${route.method.toLowerCase()}`}>{route.method}</span>
+                  <span className="route-path">{route.path}</span>
+                  {active && <span className="route-chevron">›</span>}
+                </button>;
+              })}
+              {!filteredRoutes.length && <div className="empty-routes">No routes match that search.</div>}
+            </div>
+          </> : <div className="master-sidebar-content">
+            <div className="route-list-label"><span>PROJECT SYMBOLS</span><span>{graph?.nodes.length ?? 0}</span></div>
+            {nodeKindCounts.map(({ kind, label, count }) => <div className="kind-count-row" key={kind}><span className={`kind-dot dot-${kind}`} /><span>{label}</span><strong>{count}</strong></div>)}
+            <div className="master-sidebar-note">Showing every analyzed node and relationship in this project. Select any node to inspect its source and connections.</div>
+          </div>}
           <div className="sidebar-footer" title={projectInfo?.location ?? ""}><span className="local-icon">⌂</span><span><strong>{projectInfo?.name ?? "Project"}</strong><small>{projectInfo?.location ?? "Waiting for project"}</small></span><span className="connected-indicator" /></div>
         </aside>
 
         <section className="flow-workspace">
           <div className="flow-toolbar">
-            <div className="scenario-title"><span className="eyebrow">SCENARIO MAP</span><h2>{scenario ? <><span className="title-method">{scenario.route.method}</span> {scenario.route.path}</> : "Loading route…"}</h2></div>
+            <div className="scenario-title"><span className="eyebrow">{viewMode === "master" ? "ENTIRE PROJECT" : "SCENARIO MAP"}</span><h2>{viewMode === "master" ? projectInfo?.name ?? "Master flow" : scenario ? <><span className="title-method">{scenario.route.method}</span> {scenario.route.path}</> : "Loading route…"}</h2></div>
             <div className="graph-actions">
-              <div className="mode-switch" aria-label="Graph view mode">
+              {viewMode === "scenario" && <div className="mode-switch" aria-label="Graph data mode">
                 {(["static", "observed", "both"] as const).map((mode) => <button key={mode} className={displayMode === mode ? "mode-active" : ""} onClick={() => setDisplayMode(mode)}>{mode}</button>)}
-              </div>
+              </div>}
               <div className="edge-filters" aria-label="Confidence filters">
                 {(["parsed", "inferred", "observed"] as EdgeKind[]).map((kind) => <button key={kind} title={`Toggle ${kind} edges`} className={`filter-chip ${visibleKinds[kind] ? "filter-on" : ""}`} onClick={() => toggleKind(kind)}><span className={`filter-mark mark-${kind}`} />{kind}</button>)}
               </div>
@@ -362,10 +401,12 @@ function App() {
 
           <div className="canvas-wrap">
             {error && <div className="error-banner">Couldn’t load CodeFlow data: {error}</div>}
-            {displayMode === "observed" && scenario && !scenario.has_observation && <div className="recording-banner">No runtime recording for this route yet. Run <code>codeflow record</code> to add one.</div>}
-            {!graph && !error && <div className="canvas-loading"><span className="loading-orbit" />Building your scenario map…</div>}
-            {graph && routes.length === 0 && <div className="empty-project-state"><strong>No FastAPI routes found</strong><span>Choose a Python backend folder or GitHub repository. CodeFlow currently detects FastAPI routes and SQLAlchemy models.</span>{Array.isArray(graph.meta.warnings) && graph.meta.warnings.map((warning) => <small key={String(warning)}>{String(warning)}</small>)}</div>}
-            {graph && scenario && <ReactFlow
+            {viewMode === "scenario" && displayMode === "observed" && scenario && !scenario.has_observation && <div className="recording-banner">No runtime recording for this route yet. Run <code>codeflow record</code> to add one.</div>}
+            {!graph && !error && <div className="canvas-loading"><span className="loading-orbit" />Building your {viewMode === "master" ? "project graph" : "scenario map"}…</div>}
+            {graph && viewMode === "scenario" && routes.length === 0 && <div className="empty-project-state"><strong>No FastAPI routes found</strong><span>Switch to Master to inspect all symbols CodeFlow found in this project.</span>{Array.isArray(graph.meta.warnings) && graph.meta.warnings.map((warning) => <small key={String(warning)}>{String(warning)}</small>)}</div>}
+            {graph && viewMode === "master" && graph.nodes.length === 0 && <div className="empty-project-state"><strong>No analyzed symbols found</strong><span>CodeFlow could not find supported source files or relationships in this project.</span>{Array.isArray(graph.meta.warnings) && graph.meta.warnings.map((warning) => <small key={String(warning)}>{String(warning)}</small>)}</div>}
+            {graph && (viewMode === "master" ? graph.nodes.length > 0 : Boolean(scenario)) && <ReactFlow
+              key={viewMode}
               nodes={flowElements.nodes}
               edges={flowElements.edges}
               nodeTypes={nodeTypes}
@@ -386,28 +427,28 @@ function App() {
               <Controls showInteractive={false} />
               <FitViewEvent />
             </ReactFlow>}
-            <div className="canvas-watermark"><span className="watermark-square" /> SCENARIO SCOPE <span>·</span> {scenario?.steps.length ?? 0} STEPS</div>
+            <div className="canvas-watermark"><span className="watermark-square" /> {viewMode === "master" ? <>MASTER FLOW <span>·</span> {visibleGraph.nodes.length} NODES <span>·</span> {visibleGraph.edges.length} EDGES</> : <>SCENARIO SCOPE <span>·</span> {scenario?.steps.length ?? 0} STEPS</>}</div>
           </div>
 
-          <div className="playback-bar">
+          {viewMode === "scenario" ? <div className="playback-bar">
             <div className="playback-left"><button className="transport-button" onClick={() => { setPlaying(false); setStepIndex(0); }} title="Restart">↺</button><button className="transport-button" onClick={stepBack} title="Previous step">‹</button><button className="play-button" onClick={() => { if (scenario && stepIndex === scenario.steps.length - 1) setStepIndex(0); setPlaying((value) => !value); }} title={playing ? "Pause" : "Play"}>{playing ? "Ⅱ" : "▶"}</button><button className="transport-button" onClick={stepForward} title="Next step">›</button><span className="transport-divider" /><label className="speed-select"><span>Speed</span><select value={speed} onChange={(event) => setSpeed(Number(event.target.value))}>{SPEEDS.map((value) => <option key={value} value={value}>{value}×</option>)}</select></label></div>
             <div className="timeline"><div className="timeline-label"><span>REQUEST TRAVEL</span><span>{scenario ? String(stepIndex + 1).padStart(2, "0") : "00"} <i>/</i> {String(scenario?.steps.length ?? 0).padStart(2, "0")}</span></div><input type="range" min="0" max={Math.max((scenario?.steps.length ?? 1) - 1, 0)} value={stepIndex} onChange={(event) => { setPlaying(false); setStepIndex(Number(event.target.value)); }} style={{ "--progress": `${scenario && scenario.steps.length > 1 ? (stepIndex / (scenario.steps.length - 1)) * 100 : 0}%` } as React.CSSProperties} /></div>
             <div className="current-step"><span className="step-pulse" /><span>{selectedNode?.name ?? "Waiting"}</span></div>
-          </div>
+          </div> : <div className="master-status-bar"><span className="step-pulse" /><span><strong>{visibleGraph.nodes.length}</strong> nodes</span><span className="status-separator">·</span><span><strong>{visibleGraph.edges.length}</strong> relationships</span><span className="master-status-hint">Select a node to inspect its source and connections</span></div>}
         </section>
 
         <aside className="details-panel">
-          <div className="details-header"><div><span className="eyebrow">INSPECTOR</span><h2>Step details</h2></div><span className="panel-menu">···</span></div>
+          <div className="details-header"><div><span className="eyebrow">INSPECTOR</span><h2>{viewMode === "master" ? "Node details" : "Step details"}</h2></div><span className="panel-menu">···</span></div>
           {selectedNode && graph ? <>
             <div className="selected-summary"><div className={`summary-icon icon-${selectedNode.kind}`}>{kindGlyph(selectedNode.kind)}</div><div><span className="selected-kind">{selectedNode.kind.toUpperCase()}</span><h3>{selectedNode.name}</h3><p>{selectedNode.qualname}</p></div></div>
             <div className="file-location"><span className="file-icon">▤</span><span>{source?.file ?? selectedNode.file ?? "No source file"}</span>{source?.line_start && <span className="line-range">L{source.line_start}{source.line_end && source.line_end !== source.line_start ? `–${source.line_end}` : ""}</span>}</div>
             <div className="code-section"><div className="section-title"><span>SOURCE</span><span className="code-language">PYTHON</span></div>
               {source?.code ? <div className="code-window"><div className="code-gutter">{codeLines.map((_, index) => <span key={index}>{(source.line_start ?? 1) + index}</span>)}</div><pre><code>{codeLines.map((line, index) => {
                 const highlighted = Prism.highlight(line || " ", Prism.languages.python, "python");
-                return <span className={`code-line ${currentStep?.node_id === selectedNode.id ? "line-in-scenario" : ""}`} key={index} dangerouslySetInnerHTML={{ __html: highlighted || " " }} />;
+                return <span className={`code-line ${viewMode === "scenario" && currentStep?.node_id === selectedNode.id ? "line-in-scenario" : ""}`} key={index} dangerouslySetInnerHTML={{ __html: highlighted || " " }} />;
               })}</code></pre></div> : <div className="no-source">Source is not available for this node.</div>}
             </div>
-            {currentObservation && <div className="observed-values"><div className="section-title"><span>OBSERVED VALUES</span><span className="observed-indicator">● LIVE</span></div>
+            {viewMode === "scenario" && currentObservation && <div className="observed-values"><div className="section-title"><span>OBSERVED VALUES</span><span className="observed-indicator">● LIVE</span></div>
               {Object.entries(currentObservation.args).map(([name, value]) => <div className="value-row" key={name}><span>{name}<small>{value.type}</small></span><code>{value.repr}</code></div>)}
               {currentObservation.return && <div className="value-row return-value"><span>return<small>{currentObservation.return.type}</small></span><code>{currentObservation.return.repr}</code></div>}
             </div>}
@@ -418,7 +459,7 @@ function App() {
               </div> : <div className="empty-connections">No connected edges were found.</div>}
             </div>
           </> : <div className="inspector-empty">Choose a step in the graph to inspect its source.</div>}
-          {scenario && <div className="table-summary"><span className="eyebrow">DATA TOUCHPOINTS</span><div className="table-summary-row"><span>READS</span><div>{scenario.tables_read.length ? scenario.tables_read.map((table) => <span className="table-chip read-chip" key={table}>◉ {table}</span>) : <small>—</small>}</div></div><div className="table-summary-row"><span>WRITES</span><div>{scenario.tables_written.length ? scenario.tables_written.map((table) => <span className="table-chip write-chip" key={table}>↗ {table}</span>) : <small>—</small>}</div></div></div>}
+          {(viewMode === "master" ? graph : scenario) && <div className="table-summary"><span className="eyebrow">{viewMode === "master" ? "PROJECT DATA TOUCHPOINTS" : "DATA TOUCHPOINTS"}</span><div className="table-summary-row"><span>READS</span><div>{(viewMode === "master" ? projectTouchpoints.reads : scenario?.tables_read ?? []).length ? (viewMode === "master" ? projectTouchpoints.reads : scenario?.tables_read ?? []).map((table) => <span className="table-chip read-chip" key={table}>◉ {table}</span>) : <small>—</small>}</div></div><div className="table-summary-row"><span>WRITES</span><div>{(viewMode === "master" ? projectTouchpoints.writes : scenario?.tables_written ?? []).length ? (viewMode === "master" ? projectTouchpoints.writes : scenario?.tables_written ?? []).map((table) => <span className="table-chip write-chip" key={table}>↗ {table}</span>) : <small>—</small>}</div></div></div>}
         </aside>
       </main>
     </div>
